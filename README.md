@@ -18,6 +18,7 @@
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-strict-3178C6?style=flat-square&logo=typescript&logoColor=white" />
   <img alt="Vite" src="https://img.shields.io/badge/Vite-8-646CFF?style=flat-square&logo=vite&logoColor=white" />
   <img alt="Playwright" src="https://img.shields.io/badge/e2e-Playwright-2EAD33?style=flat-square&logo=playwright&logoColor=white" />
+  <img alt="MIT licensed" src="https://img.shields.io/github/license/grivia0/Refaudio?style=flat-square&color=00C26E" />
   <img alt="Last commit" src="https://img.shields.io/github/last-commit/grivia0/Refaudio?style=flat-square&color=00C26E" />
 </p>
 
@@ -257,6 +258,7 @@ tests/
   visual.spec.ts           screenshot capture for eyeballing layout
 public/icons/              generated PNGs referenced by the manifest
 docs/screenshots/          the images at the top of this file
+LICENSE                    MIT — the only obligation is keeping the notice
 ```
 
 </details>
@@ -340,9 +342,11 @@ cloud library, no recommendations.
 
 ## License
 
-Personal project, published for reference and personal use. The code and icon are
-original work; the music you import stays yours — **do not redistribute files you do not
-own.**
+**MIT** © 2026 grivia0 — see [LICENSE](LICENSE). Fork it, change it, ship it; keeping the
+copyright notice is all that is asked.
+
+The licence covers the app's source, styles and icon. It does **not** cover the music you
+import: those files stay yours, and **do not redistribute audio you do not own.**
 
 ---
 

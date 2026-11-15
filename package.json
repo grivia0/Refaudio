@@ -2,6 +2,13 @@
   "name": "refaudio",
   "private": true,
   "version": "0.1.0",
+  "license": "MIT",
+  "author": "grivia0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/grivia0/Refaudio.git"
+  },
+  "homepage": "https://github.com/grivia0/Refaudio#readme",
   "type": "module",
   "description": "Refaudio — an installable offline music player PWA for iPhone with a local library and a LAN import inbox.",
   "scripts": {
