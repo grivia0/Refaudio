@@ -1,0 +1,28 @@
+{
+  "name": "refaudio",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Refaudio — an installable offline music player PWA for iPhone with a local library and a LAN import inbox.",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host",
+    "typecheck": "tsc --noEmit",
+    "icons": "node scripts/make-icons.mjs",
+    "inbox": "node scripts/inbox-server.mjs",
+    "fixtures": "node scripts/make-fixtures.mjs",
+    "test:e2e": "npm run fixtures && npm run build && playwright test"
+  },
+  "dependencies": {
+    "fflate": "^0.8.3",
+    "idb": "^8.0.4",
+    "music-metadata": "^12.5.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8",
+    "vite-plugin-pwa": "^2.0.0"
+  }
+}

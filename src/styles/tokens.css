@@ -1,0 +1,57 @@
+/* Design tokens: one place to tune the frosted-glass look. */
+:root {
+  color-scheme: dark;
+
+  --bg: #07070b;
+  --bg-tint-a: rgba(30, 219, 114, 0.16);
+  --bg-tint-b: rgba(88, 101, 242, 0.18);
+
+  --glass: rgba(255, 255, 255, 0.06);
+  --glass-strong: rgba(255, 255, 255, 0.12);
+  --glass-press: rgba(255, 255, 255, 0.16);
+  --stroke: rgba(255, 255, 255, 0.1);
+  --stroke-strong: rgba(255, 255, 255, 0.18);
+
+  --text: #f7f7fa;
+  --text-dim: rgba(247, 247, 250, 0.64);
+  --text-faint: rgba(247, 247, 250, 0.42);
+
+  --accent: #1edb72;
+  --accent-ink: #04140b;
+  --accent-press: #19c265;
+  --danger: #ff5f6d;
+
+  --radius-xl: 28px;
+  --radius-lg: 22px;
+  --radius-md: 16px;
+  --radius-sm: 11px;
+
+  --tap: 44px;
+  --blur: 24px;
+  --shadow: 0 20px 44px rgba(0, 0, 0, 0.46);
+  --shadow-soft: 0 8px 22px rgba(0, 0, 0, 0.3);
+
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+
+  --tabbar-height: 58px;
+  --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
+}
+
+/* Settings → Appearance: kills the blur for older devices / motion sensitivity. */
+:root.reduce-transparency {
+  --glass: rgba(24, 24, 32, 0.94);
+  --glass-strong: rgba(36, 36, 46, 0.96);
+  --glass-press: rgba(48, 48, 60, 0.98);
+  --blur: 0px;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --glass: rgba(24, 24, 32, 0.94);
+    --glass-strong: rgba(36, 36, 46, 0.96);
+    --blur: 0px;
+  }
+}

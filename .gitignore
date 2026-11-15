@@ -1,0 +1,22 @@
+# dependencies and builds
+node_modules/
+dist/
+dev-dist/
+coverage/
+
+# test output
+test-results/
+playwright-report/
+blob-report/
+e2e/.fixtures/
+tests/fixtures/*.wav
+
+# local configuration and noise
+*.local
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+
