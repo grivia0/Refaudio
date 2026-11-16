@@ -353,8 +353,10 @@ npx playwright show-trace test-results/…          # inspect a failure
 `tests/playback.spec.ts` covers the lock-screen cases that cannot be reproduced in a
 browser tab: it hides the page, pauses and resumes the way the lock-screen buttons do,
 and asserts that the source was rebuilt with the position kept; it freezes `currentTime`
-by hand so the watchdog has to notice; and it stubs `navigator.audioSession` to prove the
-`playback` category is re-asserted on every start.
+by hand so the watchdog has to notice; it makes `play()` reject with the `AbortError` iOS
+answers an overtaken resume with, and asserts the retry ends up playing with no error
+toast; and it stubs `navigator.audioSession` to prove the `playback` category is
+re-asserted on every start.
 
 Chromium is the default because WebKit on a rolling-release distro needs older ICU/XML
 libraries that may not be installed. `tests/visual.spec.ts` additionally writes
@@ -372,7 +374,7 @@ so layout changes can be eyeballed.
 | A file imports but will not play | Check the format list above — iOS cannot decode Ogg/Opus, WMA or DSD. |
 | Playback stops when the screen locks | Start playback with a tap, and launch the installed app — Safari tabs are suspended. |
 | Silent after pause/play on the lock screen | Fixed in the player: resuming rebuilds the audio session (WebKit bug 323022). iOS 17.2+ only — older iOS has no `navigator.audioSession`, so a locked screen plus the ring/silent switch can still mute until you reopen the app. Settings → About shows which mode the device is in. |
-| Storage meter keeps creeping | Backups and downloads count toward the origin quota too; clear old copies in Files. |
+| "Playback failed: The operation aborted" after resuming | Fixed in the player: WebKit aborts a `play()` that overlaps the rebuild, so the player waits for the new source and retries instead of reporting it. A device that still shows the toast is running an older build — rebuild and reopen the app twice (see *Applying an update*). |
 | Library vanished | Private browsing or cleared website data. Restore your backup ZIP. |
 | App looks stale after a deploy | Close the home-screen app from the app switcher and reopen it — the service worker updates on launch. |
 | The address changes every time I start cloudflared | A quick tunnel prints a new random hostname, and a new hostname is a new app with an empty library. Use Tailscale Serve or a named tunnel for a fixed address — see *Applying an update*. |

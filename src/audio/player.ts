@@ -46,6 +46,11 @@ export class Player {
   private recoveries = 0;
   /** When the source was last re-attached, to ignore the resulting pause. */
   private refreshAt = 0;
+  /** True between `load()` and the new source's metadata arriving. */
+  private rebuilding = false;
+  /** Aborted plays are retried once the element can play, never endlessly. */
+  private playRetries = 0;
+  private retryPending = false;
 
   constructor(deps: PlayerDeps) {
     this.deps = deps;
@@ -71,7 +76,7 @@ export class Player {
       if (this.stateValue === 'ended') return;
       // Re-attaching the source can make WebKit fire a pause late; that one is
       // part of the rebuild, not an interruption.
-      if (this.wantsPlay && Date.now() - this.refreshAt < 500) return;
+      if (this.wantsPlay && (this.rebuilding || Date.now() - this.refreshAt < 500)) return;
       // Only pause() stops on purpose. Anything else — the lock-screen button of
       // a suspended page, a phone call, headphones pulled — leaves the audio
       // session broken behind the element, so arm the recovery for the resume.
@@ -266,23 +271,35 @@ export class Player {
     // Re-assert the session on every start: iOS resets it across an
     // interruption, and `auto` is the category that plays silently.
     configureAudioSession();
-    // Coming back from the lock screen or a call: the element left behind by
-    // that interruption has to be rebuilt or it stays mute.
-    if (this.interrupted) this.refreshAudioElement();
-
     this.wantsPlay = true;
+    // The clock is the only honest witness of a dead session, so watch it from
+    // the moment sound is asked for, not from when the promise settles.
+    this.startWatchdog();
+
+    // Coming back from the lock screen or a call: the element left behind by
+    // that interruption has to be rebuilt or it stays mute. Awaiting matters —
+    // a `play()` that overlaps that reload is what WebKit rejects with
+    // `AbortError: The operation aborted`, which read as "Playback failed".
+    if (this.interrupted) await this.refreshAudioElement();
+
     try {
       await this.audio.play();
-      this.startWatchdog();
+      this.playRetries = 0;
       if (this.currentId && this.countedFor !== this.currentId) {
         this.countedFor = this.currentId;
         this.deps.onPlayed(this.currentId, this.currentTime);
       }
     } catch (error) {
+      const name = error instanceof DOMException ? error.name : '';
+      // Not a failure: WebKit also aborts a play() that a pause or a newer tap
+      // overtook. The intent stands, so wait for the element and try again.
+      if (name === 'AbortError') {
+        this.retryWhenReady();
+        return;
+      }
       this.wantsPlay = false;
       this.stopWatchdog();
       this.setState('paused');
-      const name = error instanceof DOMException ? error.name : '';
       this.deps.onError(
         name === 'NotAllowedError'
           ? 'iOS needs a tap on the play button before audio can start.'
@@ -294,6 +311,8 @@ export class Player {
   pause(): void {
     const wasPlaying = !this.audio.paused;
     this.wantsPlay = false;
+    this.playRetries = 0;
+    this.retryPending = false;
     this.stopWatchdog();
     // A pause asked for while the app is hidden came from the lock screen or
     // Control Center. iOS tears the session down around it, so arm the
@@ -311,6 +330,9 @@ export class Player {
   stop(): void {
     this.wantsPlay = false;
     this.interrupted = false;
+    this.rebuilding = false;
+    this.playRetries = 0;
+    this.retryPending = false;
     this.stopWatchdog();
     this.audio.pause();
     this.audio.removeAttribute('src');
@@ -604,6 +626,8 @@ export class Player {
     this.wantsPlay = false;
     this.interrupted = false;
     this.recoveries = 0;
+    this.playRetries = 0;
+    this.retryPending = false;
     this.audio.pause();
     this.revokeUrls();
     this.audioUrl = URL.createObjectURL(blob);
@@ -655,11 +679,14 @@ export class Player {
    * `play()` on it stays mute. Re-attaching the source gives WebKit a fresh
    * renderer, and the session is put back to `playback` while we are here; the
    * position comes back through `pendingSeek` once metadata is available.
+   *
+   * Resolves when the new source is usable (metadata, an error, or a timeout):
+   * issuing `play()` while the reload is still in flight makes WebKit abort it
+   * with `AbortError`, so callers have to wait for this.
    */
-  private refreshAudioElement(): void {
+  private refreshAudioElement(): Promise<void> {
     const audio = this.audio;
     this.interrupted = false;
-    this.wantsPlay = false;
     this.refreshAt = Date.now();
     this.lastMoveAt = Date.now();
     this.lastMovePos = audio.currentTime;
@@ -669,12 +696,63 @@ export class Player {
     configureAudioSession();
     audio.volume = this.volume;
     audio.playbackRate = this.rate;
-    try {
-      audio.load();
-    } catch {
-      // Ignore: the existing source still plays, and the next tap retries.
-    }
     this.emit('time');
+
+    return new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        this.rebuilding = false;
+        audio.removeEventListener('loadedmetadata', finish);
+        audio.removeEventListener('error', finish);
+        window.clearTimeout(timer);
+        resolve();
+      };
+      this.rebuilding = true;
+      const timer = window.setTimeout(finish, 3000);
+      audio.addEventListener('loadedmetadata', finish);
+      audio.addEventListener('error', finish);
+      try {
+        audio.load();
+      } catch {
+        // The existing source still plays; the caller's play() decides.
+        finish();
+      }
+    });
+  }
+
+  /**
+   * WebKit answers an overtaken `play()` with `AbortError`. The user still wants
+   * sound, so try again as soon as the element can play — twice, then stop and
+   * leave it to the next tap rather than looping on a file that will not start.
+   */
+  private retryWhenReady(): void {
+    if (this.retryPending) return;
+    if (this.playRetries >= 2) {
+      this.wantsPlay = false;
+      this.stopWatchdog();
+      this.setState('paused');
+      setPlaybackState('paused');
+      this.deps.onError('Playback was interrupted — tap play to resume.');
+      return;
+    }
+
+    const audio = this.audio;
+    this.retryPending = true;
+    const retry = (): void => {
+      audio.removeEventListener('canplay', retry);
+      window.clearTimeout(timer);
+      this.retryPending = false;
+      if (!this.wantsPlay || !audio.paused) return;
+      this.playRetries += 1;
+      void this.play();
+    };
+    const timer = window.setTimeout(retry, 4000);
+    audio.addEventListener('canplay', retry);
+    // A rebuilt local blob is usually ready already, and the abort can arrive
+    // after `canplay` has fired, so check the element instead of waiting.
+    if (audio.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) window.setTimeout(retry, 0);
   }
 
   /**
@@ -698,18 +776,36 @@ export class Player {
 
   private checkProgress(): void {
     const audio = this.audio;
-    if (!this.wantsPlay || audio.paused) {
+    if (!this.wantsPlay) {
       this.lastMoveAt = Date.now();
       this.lastMovePos = audio.currentTime;
       return;
     }
     const pos = audio.currentTime;
-    if (Math.abs(pos - this.lastMovePos) > 0.2) {
+    if (!audio.paused && Math.abs(pos - this.lastMovePos) > 0.2) {
       this.lastMoveAt = Date.now();
       this.lastMovePos = pos;
       this.recoveries = 0;
       return;
     }
+
+    // The element is paused while the user still wants sound: the play attempt
+    // was lost (an aborted resume, a rebuild that never started). Ask again.
+    if (audio.paused) {
+      if (this.retryPending || Date.now() - this.lastMoveAt < 3000) return;
+      this.lastMoveAt = Date.now();
+      if (this.recoveries >= 2) {
+        this.wantsPlay = false;
+        this.stopWatchdog();
+        this.setState('paused');
+        setPlaybackState('paused');
+        return;
+      }
+      this.recoveries += 1;
+      void this.play();
+      return;
+    }
+
     if (Date.now() - this.lastMoveAt < 5000) return;
     // Two rebuilds that do not help mean the file itself is the problem; stop
     // rather than loop play() on it forever.
@@ -719,7 +815,8 @@ export class Player {
     }
     this.recoveries += 1;
     this.lastMoveAt = Date.now();
-    this.refreshAudioElement();
+    // `play()` owns the order — rebuild, wait for the new source, then start.
+    this.interrupted = true;
     void this.play();
   }
 

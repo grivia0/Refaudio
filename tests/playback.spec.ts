@@ -76,6 +76,10 @@ async function countRebuilds(page: Page): Promise<void> {
 const rebuilds = (page: Page): Promise<number> =>
   page.evaluate(() => (window as Window & { rebuilds?: number }).rebuilds ?? 0);
 
+/** How often the stubbed `play()` was aborted the way WebKit aborts it. */
+const aborts = (page: Page): Promise<number> =>
+  page.evaluate(() => (window as Window & { __rfAbort?: { aborts: number } }).__rfAbort?.aborts ?? -1);
+
 const position = (page: Page): Promise<number> =>
   page.evaluate((sel) => document.querySelector<HTMLAudioElement>(sel)?.currentTime ?? 0, audioEl);
 
@@ -178,4 +182,58 @@ test('the iOS audio session is put back to playback on every start', async ({ pa
   await page.getByRole('button', { name: /First Tone/ }).first().click();
   await expect(page.locator('.mini__btn--play')).toHaveAttribute('aria-label', 'Pause', { timeout: 15_000 });
   expect(await readType()).toBe('playback');
+});
+
+test('an aborted resume is retried instead of reported as a failure', async ({ page }) => {
+  // iOS rejects a `play()` that overlaps the rebuild with
+  // `AbortError: The operation aborted`. That used to reach the user as
+  // "Playback failed: Operation aborted" and left the track sitting paused.
+  await page.addInitScript(() => {
+    const proto = HTMLMediaElement.prototype;
+    const original = proto.play;
+    const state = { abortNext: false, aborts: 0 };
+    (window as Window & { __rfAbort?: typeof state }).__rfAbort = state;
+    proto.play = function play(this: HTMLMediaElement): Promise<void> {
+      if (state.abortNext) {
+        state.abortNext = false;
+        state.aborts += 1;
+        return Promise.reject(new DOMException('The operation aborted.', 'AbortError'));
+      }
+      return original.call(this);
+    };
+  });
+
+  const tone = longTone(14);
+  try {
+    await page.goto('/');
+    await page.waitForTimeout(1800);
+    await dismissInstallTip(page);
+    await importFile(page, tone.file, /Long Tone/);
+
+    const mini = page.locator('.mini');
+    await page.getByRole('button', { name: /Long Tone/ }).first().click();
+    await expect(mini.locator('.mini__btn--play')).toHaveAttribute('aria-label', 'Pause', { timeout: 15_000 });
+    await expect.poll(() => position(page)).toBeGreaterThan(0.4);
+
+    // The lock-screen pause arms the rebuild that the resume has to wait for.
+    await hidePage(page);
+    await mini.getByRole('button', { name: 'Pause', exact: true }).click();
+    await expect(mini.locator('.mini__btn--play')).toHaveAttribute('aria-label', 'Play', { timeout: 15_000 });
+
+    // Let the resume be the call WebKit aborts.
+    await page.evaluate(() => {
+      const state = (window as Window & { __rfAbort?: { abortNext: boolean } }).__rfAbort;
+      if (state) state.abortNext = true;
+    });
+    await mini.getByRole('button', { name: 'Play', exact: true }).click();
+
+    // Exactly one aborted attempt, then the retry plays; nothing blames the file.
+    await expect.poll(() => aborts(page), { timeout: 10_000 }).toBe(1);
+    await expect(mini.locator('.mini__btn--play')).toHaveAttribute('aria-label', 'Pause', { timeout: 15_000 });
+    await expect.poll(() => position(page), { timeout: 10_000 }).toBeGreaterThan(1);
+    await expect(page.locator('.toast--error')).toHaveCount(0);
+    expect(await paused(page)).toBe(false);
+  } finally {
+    rmSync(tone.dir, { recursive: true, force: true });
+  }
 });
