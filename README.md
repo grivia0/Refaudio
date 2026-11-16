@@ -132,6 +132,37 @@ Installed apps get their own storage bucket, which iOS evicts far less aggressiv
 than a Safari tab's. Settings → **Keep data safe** additionally calls
 `navigator.storage.persist()`.
 
+### 3. Applying an update
+
+`npm run inbox` serves `dist/` from disk on every request, so a rebuild *is* the
+deploy — no server restart, no re-install, and the address and your library stay
+put:
+
+```bash
+git pull && npm install && npm run build
+```
+
+Then close the home-screen app from the app switcher and reopen it. The service
+worker picks up the new `sw.js` on launch and may toast *"A new version is ready"*;
+one more close/reopen and the new build is running. Settings → About is the quickest
+proof that it landed — the rows there change with every release.
+
+**Keep that address stable.** `cloudflared tunnel --url …` is a *quick* tunnel: every
+start prints a fresh `https://<random-words>.trycloudflare.com`, and a new hostname is
+a new **origin** — a new service worker and a new IndexedDB — so the icon you added
+from the old link keeps its own library and the new link starts empty:
+
+| Option | Address | Notes |
+| --- | --- | --- |
+| Tailscale Serve | `https://<machine>.<tailnet>.ts.net` | Free, private, trusted certificate; the phone needs the Tailscale app |
+| Named Cloudflare tunnel | a subdomain you own | Survives restarts and IP changes, reachable anywhere — put Cloudflare Access in front, the inbox API has no auth |
+| Static host | `https://user.github.io/…` | Stable and public, but there is no server, so *Pull from computer* is LAN-only |
+
+If you stay on quick tunnels: leave `cloudflared` running (a `tmux` session or a
+`systemd --user` unit) so rebuilds keep the same link, and export a backup from
+Settings before any restart that would change it — a hostname that no longer resolves
+takes that origin's library with it, because the data is keyed to the origin.
+
 ## Getting music in
 
 ### From the iPhone
@@ -344,6 +375,7 @@ so layout changes can be eyeballed.
 | Storage meter keeps creeping | Backups and downloads count toward the origin quota too; clear old copies in Files. |
 | Library vanished | Private browsing or cleared website data. Restore your backup ZIP. |
 | App looks stale after a deploy | Close the home-screen app from the app switcher and reopen it — the service worker updates on launch. |
+| The address changes every time I start cloudflared | A quick tunnel prints a new random hostname, and a new hostname is a new app with an empty library. Use Tailscale Serve or a named tunnel for a fixed address — see *Applying an update*. |
 
 ## Limits and what's next
 
