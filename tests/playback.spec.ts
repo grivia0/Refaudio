@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const fixtures = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');
 const audioEl = 'audio[data-refaudio-audio]';
+const keepAliveEl = 'audio[data-refaudio-keepalive]';
 
 /** A tone long enough for the watchdog and the resume path to have time to run. */
 function longTone(seconds: number): { dir: string; file: string } {
@@ -86,6 +87,13 @@ const position = (page: Page): Promise<number> =>
 const paused = (page: Page): Promise<boolean> =>
   page.evaluate((sel) => document.querySelector<HTMLAudioElement>(sel)?.paused ?? true, audioEl);
 
+/** While paused in the background a silent stream holds the audio session. */
+const keepAlive = (page: Page): Promise<boolean> =>
+  page.evaluate(
+    (sel) => document.querySelector<HTMLAudioElement>(sel)?.paused === false,
+    keepAliveEl,
+  );
+
 test('resuming after a lock-screen pause rebuilds the audio element', async ({ page }) => {
   // WebKit bug 323022: an interrupted page keeps an element that reports playing
   // while the audio session routes nothing. The source has to be re-attached.
@@ -151,6 +159,46 @@ test('a frozen playback clock is rebuilt by the watchdog', async ({ page }) => {
     }, audioEl);
 
     await expect.poll(() => rebuilds(page), { timeout: 20_000 }).toBeGreaterThan(0);
+  } finally {
+    rmSync(tone.dir, { recursive: true, force: true });
+  }
+});
+
+test('a lock-screen pause holds the audio session open for the next resume', async ({ page }) => {
+  // iOS only lets a page pick its audio-session category while it is audible, so
+  // a pause on the lock screen leaves the app unable to make the following
+  // resume audible until it is opened again. A looping silent stream keeps the
+  // session alive in between, which is what the lock-screen button needs.
+  const tone = longTone(14);
+  try {
+    await page.goto('/');
+    await page.waitForTimeout(1800);
+    await dismissInstallTip(page);
+    await importFile(page, tone.file, /Long Tone/);
+
+    const mini = page.locator('.mini');
+    await page.getByRole('button', { name: /Long Tone/ }).first().click();
+    await expect(mini.locator('.mini__btn--play')).toHaveAttribute('aria-label', 'Pause', { timeout: 15_000 });
+    await expect.poll(() => position(page)).toBeGreaterThan(0.4);
+
+    await hidePage(page);
+    await mini.getByRole('button', { name: 'Pause', exact: true }).click();
+    await expect(mini.locator('.mini__btn--play')).toHaveAttribute('aria-label', 'Play', { timeout: 15_000 });
+
+    // The track is paused; the session is still held by the silent stream.
+    expect(await paused(page)).toBe(true);
+    await expect(page.locator(keepAliveEl)).toHaveCount(1);
+    await expect.poll(() => keepAlive(page), { timeout: 10_000 }).toBe(true);
+
+    // The lock-screen play button then resumes into a live session instead of
+    // reporting playing while routing nothing.
+    await mini.getByRole('button', { name: 'Play', exact: true }).click();
+    await expect(mini.locator('.mini__btn--play')).toHaveAttribute('aria-label', 'Pause', { timeout: 15_000 });
+    await expect.poll(() => position(page), { timeout: 10_000 }).toBeGreaterThan(1);
+
+    // The stream hands the session over and disappears, so it never plays twice.
+    await expect(page.locator(keepAliveEl)).toHaveCount(0, { timeout: 10_000 });
+    await expect(page.locator('.toast--error')).toHaveCount(0);
   } finally {
     rmSync(tone.dir, { recursive: true, force: true });
   }

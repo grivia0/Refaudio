@@ -10,6 +10,7 @@ import { newId } from './util';
 
 export const player = new Player({
   getTrack: (id) => trackOf(id),
+  keepSessionAlive: () => state.settings.keepSessionAlive,
   onError: (message) => toast(message, 'error'),
   onPersist: (snapshot) => {
     state.settings = { ...state.settings, playback: snapshot };

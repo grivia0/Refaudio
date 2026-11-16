@@ -25,6 +25,8 @@ export const DEFAULT_SETTINGS: PersistedSettings = {
   recent: [],
   installTipDismissed: false,
   reduceTransparency: false,
+  // On by default: without it a lock-screen pause cannot be resumed on iOS.
+  keepSessionAlive: true,
   playback: null,
 };
 

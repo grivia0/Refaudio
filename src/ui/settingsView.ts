@@ -1,4 +1,5 @@
 import { player, removePlaylist } from '../app';
+import { sessionHeld } from '../audio/keepAlive';
 import { audioSessionLabel } from '../audio/session';
 import { clearLibrary, requestPersistence, storageState, type StorageState } from '../db';
 import { listInbox } from '../inbox';
@@ -131,6 +132,18 @@ export function createSettingsView(): SettingsView {
   restoreRow.tail.append(smallButton('Restore', () => void restoreBackup()));
   backupCard.append(exportRow.node, restoreRow.node);
 
+  /* ------------------------------- playback ----------------------------- */
+  const playbackCard = card('Playback');
+  const sessionRow = row(
+    'Resume from the lock screen',
+    'Keeps a silent stream running while paused in the background, so the lock-screen play button brings the sound back. Costs a little battery.',
+  );
+  const sessionToggle = toggle(state.settings.keepSessionAlive, (value) => {
+    void persist({ keepSessionAlive: value }).then(() => player.applySessionSetting());
+  });
+  sessionRow.tail.append(sessionToggle);
+  playbackCard.append(sessionRow.node);
+
   /* ------------------------------ appearance ---------------------------- */
   const appearanceCard = card('Appearance');
   const transparencyRow = row('Reduce transparency', 'Solid panels instead of blur. Helps older iPhones keep scrolling smooth.');
@@ -210,7 +223,7 @@ export function createSettingsView(): SettingsView {
   const debug = el('pre', 'debug');
   dangerCard.append(clearRow.node, debug);
 
-  scroller.append(storageCard, importCard, backupCard, appearanceCard, aboutCard, dangerCard);
+  scroller.append(storageCard, importCard, backupCard, playbackCard, appearanceCard, aboutCard, dangerCard);
 
   /* ------------------------------- refresh ------------------------------ */
   let storage: StorageState | null = null;
@@ -235,6 +248,7 @@ export function createSettingsView(): SettingsView {
       `storage: ${storage ? `${formatBytes(storage.usage)} / ${formatBytes(storage.quota)}` : 'n/a'}`,
       `persisted: ${storage ? String(storage.persisted) : 'n/a'}`,
       `inbox: ${state.settings.inboxUrl || location.origin}`,
+      `session held: ${String(sessionHeld())}`,
       `service worker: ${'serviceWorker' in navigator ? (navigator.serviceWorker.controller ? 'active' : 'not yet') : 'unsupported'}`,
       `standalone: ${String(isStandalone)}`,
       `viewport: ${window.innerWidth}×${window.innerHeight}`,
@@ -250,6 +264,7 @@ export function createSettingsView(): SettingsView {
     installState.textContent = isStandalone ? 'Home Screen app' : 'Safari';
     audioSession.textContent = audioSessionLabel();
     transparencyToggle.setAttribute('aria-checked', state.settings.reduceTransparency ? 'true' : 'false');
+    sessionToggle.setAttribute('aria-checked', state.settings.keepSessionAlive ? 'true' : 'false');
     void refreshStorage();
   };
 

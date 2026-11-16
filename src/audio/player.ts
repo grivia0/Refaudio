@@ -1,5 +1,6 @@
 import type { RepeatMode, TrackMeta } from '../types';
 import { getAudioBlob, getCoverBlob } from '../db';
+import { holdAudioSession, releaseAudioSession } from './keepAlive';
 import { clearMetadata, setMetadata, setPlaybackState, setPosition } from './mediaSession';
 import { configureAudioSession } from './session';
 
@@ -11,9 +12,17 @@ export interface PlayerDeps {
   onError: (message: string) => void;
   onPersist: (snapshot: { trackId: string | null; position: number; queue: string[]; index: number }) => void;
   onPlayed: (id: string, position: number) => void;
+  /** Settings switch for the silent stream that keeps the session alive. */
+  keepSessionAlive?: () => boolean;
 }
 
 const SEEK_STEP = 15;
+
+/** How long a paused, hidden session is held open before the battery wins. */
+const KEEP_ALIVE_LIMIT = 30 * 60_000;
+
+/** Beat between the resumed track starting and the silent stream letting go. */
+const KEEP_ALIVE_HANDOVER = 1000;
 
 export class Player {
 
@@ -51,6 +60,10 @@ export class Player {
   /** Aborted plays are retried once the element can play, never endlessly. */
   private playRetries = 0;
   private retryPending = false;
+  /** Silent stream holding the audio session open while paused in the background. */
+  private keepAliveTimer: number | undefined;
+  /** Bumped on every arm/disarm so a stale handover cannot drop a fresh hold. */
+  private keepAliveGeneration = 0;
 
   constructor(deps: PlayerDeps) {
     this.deps = deps;
@@ -88,6 +101,9 @@ export class Player {
       this.setState('paused');
       setPlaybackState('paused');
       this.persistNow();
+      // A pause that arrives while the app is hidden came from the lock screen
+      // or Control Center, where iOS takes the session down with it.
+      if (document.visibilityState === 'hidden') this.armKeepAlive();
     });
     audio.addEventListener('ended', () => this.handleEnded());
     audio.addEventListener('error', () => {
@@ -115,8 +131,16 @@ export class Player {
     // Unlocking the phone: the element can come back paused with no event, and
     // iOS resets the session category even though we set it at launch.
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState !== 'visible') return;
+      if (document.visibilityState === 'hidden') {
+        // Locking the screen on an already paused app is the one case no later
+        // play() can repair, so the session is held open from here on.
+        if (!this.wantsPlay && this.stateValue === 'paused' && this.audio.src) {
+          this.armKeepAlive();
+        }
+        return;
+      }
       configureAudioSession();
+      this.disarmKeepAlive();
       if (!this.wantsPlay) return;
       if (this.audio.paused) void this.play();
       else this.startWatchdog();
@@ -285,6 +309,8 @@ export class Player {
     try {
       await this.audio.play();
       this.playRetries = 0;
+      // The track is audible again: the silent stream can let the session go.
+      this.releaseKeepAliveSoon();
       if (this.currentId && this.countedFor !== this.currentId) {
         this.countedFor = this.currentId;
         this.deps.onPlayed(this.currentId, this.currentTime);
@@ -327,6 +353,11 @@ export class Player {
     else void this.play();
   }
 
+  /** Settings changed under a held session: drop it when the switch is off. */
+  applySessionSetting(): void {
+    if (this.deps.keepSessionAlive?.() === false) this.disarmKeepAlive();
+  }
+
   stop(): void {
     this.wantsPlay = false;
     this.interrupted = false;
@@ -334,6 +365,7 @@ export class Player {
     this.playRetries = 0;
     this.retryPending = false;
     this.stopWatchdog();
+    this.disarmKeepAlive();
     this.audio.pause();
     this.audio.removeAttribute('src');
     this.audio.load();
@@ -753,6 +785,43 @@ export class Player {
     // A rebuilt local blob is usually ready already, and the abort can arrive
     // after `canplay` has fired, so check the element instead of waiting.
     if (audio.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) window.setTimeout(retry, 0);
+  }
+
+  /**
+   * Holds the audio session open across a pause that happened while the app was
+   * hidden, so the lock-screen play button starts real sound instead of the
+   * silent `auto` category. See `keepAlive.ts` for why this is the only lever.
+   */
+  private armKeepAlive(): void {
+    if (this.deps.keepSessionAlive?.() === false) return;
+    this.keepAliveGeneration += 1;
+    if (this.keepAliveTimer !== undefined) window.clearTimeout(this.keepAliveTimer);
+    holdAudioSession();
+    // Bounded: a stream nobody resumes should not keep the audio hardware awake
+    // all night. After this the lock screen falls back to resuming on unlock.
+    this.keepAliveTimer = window.setTimeout(() => this.disarmKeepAlive(), KEEP_ALIVE_LIMIT);
+  }
+
+  private disarmKeepAlive(): void {
+    this.keepAliveGeneration += 1;
+    if (this.keepAliveTimer !== undefined) {
+      window.clearTimeout(this.keepAliveTimer);
+      this.keepAliveTimer = undefined;
+    }
+    releaseAudioSession();
+  }
+
+  /**
+   * Lets go once the resumed track is playing. The wait matters: dropping the
+   * silent stream in the same tick as the new `play()` can take the session down
+   * before the track has claimed it.
+   */
+  private releaseKeepAliveSoon(): void {
+    const generation = this.keepAliveGeneration;
+    window.setTimeout(() => {
+      // A pause in the meantime re-armed it; that hold is newer than ours.
+      if (this.keepAliveGeneration === generation) this.disarmKeepAlive();
+    }, KEEP_ALIVE_HANDOVER);
   }
 
   /**

@@ -249,6 +249,17 @@ locked, the next `play()` re-attaches the source and restores the position throu
 because the frozen state fires no event at all, and rebuilds twice at most before giving
 up on the file.
 
+**Lock-screen resume.** The category can only be *chosen* by an audible page: once a pause
+from the lock screen leaves the app hidden and silent, `navigator.audioSession.type =
+'playback'` throws, and the `play()` the lock screen sends next runs on `auto` — the track
+reports playing, nothing comes out, and unlocking the phone is what finally makes it
+audible. No page can repair the category from that state, so the app avoids entering it:
+while paused in the background, `audio/keepAlive.ts` loops a one-second silent WAV, which
+keeps the session active and `playback`, turning the resume into an ordinary `play()` on a
+live session. The stream lets go a second after the track is audible again, and stops on
+unlock, on *stop*, and after 30 minutes so a forgotten pause does not keep the audio
+hardware awake. Settings → *Playback → Resume from the lock screen* switches it off.
+
 **Lists.** The library is flattened into rows (group headers plus tracks) and rendered
 through a variable-height virtual list: only the visible window plus 200 px of overscan
 exists in the DOM, and rows are *reused* rather than rebuilt as you scroll, so artwork
@@ -284,6 +295,7 @@ src/
   backup.ts                streamed ZIP export, tolerant merge import
   inbox.ts                 /api/files and /api/file/:name client
   audio/player.ts          transport, queue, shuffle bag, persistence, recovery
+  audio/keepAlive.ts       silent stream that holds the session across a pause
   audio/mediaSession.ts    lock-screen metadata and action handlers
   audio/session.ts         iOS audio-session category (17.2+) and its label
   ui/                      shell, library, playlists, settings, player, overlays,
@@ -355,8 +367,9 @@ browser tab: it hides the page, pauses and resumes the way the lock-screen butto
 and asserts that the source was rebuilt with the position kept; it freezes `currentTime`
 by hand so the watchdog has to notice; it makes `play()` reject with the `AbortError` iOS
 answers an overtaken resume with, and asserts the retry ends up playing with no error
-toast; and it stubs `navigator.audioSession` to prove the `playback` category is
-re-asserted on every start.
+toast; it checks that a pause while hidden leaves a silent stream holding the session and
+that the stream is gone once the resume is audible; and it stubs `navigator.audioSession`
+to prove the `playback` category is re-asserted on every start.
 
 Chromium is the default because WebKit on a rolling-release distro needs older ICU/XML
 libraries that may not be installed. `tests/visual.spec.ts` additionally writes
@@ -373,7 +386,7 @@ so layout changes can be eyeballed.
 | "Not enough device storage" | The iOS quota is shared with Safari: delete tracks or free space. |
 | A file imports but will not play | Check the format list above — iOS cannot decode Ogg/Opus, WMA or DSD. |
 | Playback stops when the screen locks | Start playback with a tap, and launch the installed app — Safari tabs are suspended. |
-| Silent after pause/play on the lock screen | Fixed in the player: resuming rebuilds the audio session (WebKit bug 323022). iOS 17.2+ only — older iOS has no `navigator.audioSession`, so a locked screen plus the ring/silent switch can still mute until you reopen the app. Settings → About shows which mode the device is in. |
+| Silent after pause/play on the lock screen | iOS only lets an *audible* page pick its audio-session category, so a page cannot make a resume audible while the locked app is silent. The player therefore holds the session open with a silent stream whenever it is paused in the background — keep *Settings → Playback → Resume from the lock screen* on (default). With it off, or after 30 minutes paused, sound returns as soon as you open the app. |
 | "Playback failed: The operation aborted" after resuming | Fixed in the player: WebKit aborts a `play()` that overlaps the rebuild, so the player waits for the new source and retries instead of reporting it. A device that still shows the toast is running an older build — rebuild and reopen the app twice (see *Applying an update*). |
 | Library vanished | Private browsing or cleared website data. Restore your backup ZIP. |
 | App looks stale after a deploy | Close the home-screen app from the app switcher and reopen it — the service worker updates on launch. |
@@ -383,8 +396,9 @@ so layout changes can be eyeballed.
 
 Being a web app on iOS sets a hard ceiling: **audio is the only thing that keeps running
 in the background.** There is no background import, sync or file watching — and there is
-no way around that from a PWA. Everything else is a deliberate non-goal: no accounts, no
-cloud library, no recommendations.
+no way around that from a PWA. The silent stream that keeps a lock-screen pause resumable
+is that same lever, which is why it costs a little battery. Everything else is a
+deliberate non-goal: no accounts, no cloud library, no recommendations.
 
 - [ ] CarPlay / Apple Watch controls (limited by what iOS exposes to the web)
 - [ ] Gapless and crossfade playback

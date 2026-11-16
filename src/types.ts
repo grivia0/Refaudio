@@ -59,6 +59,8 @@ export interface PersistedSettings {
   recent: string[];
   installTipDismissed: boolean;
   reduceTransparency: boolean;
+  /** Hold the audio session open while paused in the background (iOS lock screen). */
+  keepSessionAlive: boolean;
   playback: PlaybackSnapshot | null;
 }
 
