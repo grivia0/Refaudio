@@ -206,8 +206,17 @@ revoked on change, so only one file is held in memory. Shuffle is a permutation 
 "shuffle bag") with the current track pinned to the front: every track plays once per
 cycle and skipping never repeats something already played. Position and queue are saved
 every ~4 s and on pause/track change, then restored **paused**, because iOS rejects an
-unprompted `play()`. `navigator.audioSession.type = 'playback'` keeps audio alive when
-the ring/silent switch is off.
+unprompted `play()`.
+
+**Interruptions.** iOS 17.2+ starts a page on the `auto` audio-session category, which is
+muted by the ring/silent switch and does not survive a lock-screen pause: the element
+comes back reporting *playing* while routing no sound (WebKit bug 323022). So the session
+is put back to `playback` on every start, every unlock and every re-attach — not once at
+launch. When a pause arrives that the app did not ask for, or the screen was already
+locked, the next `play()` re-attaches the source and restores the position through
+`pendingSeek`. A 2 s watchdog also polls `currentTime` while the player wants sound,
+because the frozen state fires no event at all, and rebuilds twice at most before giving
+up on the file.
 
 **Lists.** The library is flattened into rows (group headers plus tracks) and rendered
 through a variable-height virtual list: only the visible window plus 200 px of overscan
@@ -243,8 +252,9 @@ src/
   metadata.worker.ts       music-metadata inside a worker
   backup.ts                streamed ZIP export, tolerant merge import
   inbox.ts                 /api/files and /api/file/:name client
-  audio/player.ts          transport, queue, shuffle bag, persistence
+  audio/player.ts          transport, queue, shuffle bag, persistence, recovery
   audio/mediaSession.ts    lock-screen metadata and action handlers
+  audio/session.ts         iOS audio-session category (17.2+) and its label
   ui/                      shell, library, playlists, settings, player, overlays,
                            virtual list, artwork cache, viewport, DOM helpers
   styles/tokens.css        colours, radii, blur, safe-area variables
@@ -255,6 +265,7 @@ scripts/
   make-fixtures.mjs        tiny WAVs for the smoke test
 tests/
   smoke.spec.ts            9 end-to-end flows at iPhone size
+  playback.spec.ts         interruption recovery: lock-screen pause, frozen clock
   visual.spec.ts           screenshot capture for eyeballing layout
 public/icons/              generated PNGs referenced by the manifest
 docs/screenshots/          the images at the top of this file
@@ -308,6 +319,12 @@ PLAYWRIGHT_WEBKIT=1 npx playwright test           # also run Safari's engine
 npx playwright show-trace test-results/…          # inspect a failure
 ```
 
+`tests/playback.spec.ts` covers the lock-screen cases that cannot be reproduced in a
+browser tab: it hides the page, pauses and resumes the way the lock-screen buttons do,
+and asserts that the source was rebuilt with the position kept; it freezes `currentTime`
+by hand so the watchdog has to notice; and it stubs `navigator.audioSession` to prove the
+`playback` category is re-asserted on every start.
+
 Chromium is the default because WebKit on a rolling-release distro needs older ICU/XML
 libraries that may not be installed. `tests/visual.spec.ts` additionally writes
 screenshots of the library, now-playing sheet, settings and playlists to `test-results/`
@@ -323,6 +340,7 @@ so layout changes can be eyeballed.
 | "Not enough device storage" | The iOS quota is shared with Safari: delete tracks or free space. |
 | A file imports but will not play | Check the format list above — iOS cannot decode Ogg/Opus, WMA or DSD. |
 | Playback stops when the screen locks | Start playback with a tap, and launch the installed app — Safari tabs are suspended. |
+| Silent after pause/play on the lock screen | Fixed in the player: resuming rebuilds the audio session (WebKit bug 323022). iOS 17.2+ only — older iOS has no `navigator.audioSession`, so a locked screen plus the ring/silent switch can still mute until you reopen the app. Settings → About shows which mode the device is in. |
 | Storage meter keeps creeping | Backups and downloads count toward the origin quota too; clear old copies in Files. |
 | Library vanished | Private browsing or cleared website data. Restore your backup ZIP. |
 | App looks stale after a deploy | Close the home-screen app from the app switcher and reopen it — the service worker updates on launch. |

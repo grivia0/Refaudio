@@ -1,4 +1,5 @@
 import { player, removePlaylist } from '../app';
+import { audioSessionLabel } from '../audio/session';
 import { clearLibrary, requestPersistence, storageState, type StorageState } from '../db';
 import { listInbox } from '../inbox';
 import { persist, refreshLibrary, state } from '../state';
@@ -147,6 +148,7 @@ export function createSettingsView(): SettingsView {
   const playlistCount = el('dd', undefined, '0');
   const versionValue = el('dd', undefined, '0.1.0');
   const installState = el('dd', undefined, 'Browser');
+  const audioSession = el('dd', undefined, audioSessionLabel());
   about.append(
     el('dt', undefined, 'Tracks'),
     trackCount,
@@ -156,6 +158,8 @@ export function createSettingsView(): SettingsView {
     versionValue,
     el('dt', undefined, 'Running as'),
     installState,
+    el('dt', undefined, 'Audio session'),
+    audioSession,
   );
   aboutCard.append(about);
 
@@ -244,6 +248,7 @@ export function createSettingsView(): SettingsView {
     trackCount.textContent = `${state.tracks.length}`;
     playlistCount.textContent = `${state.playlists.length}`;
     installState.textContent = isStandalone ? 'Home Screen app' : 'Safari';
+    audioSession.textContent = audioSessionLabel();
     transparencyToggle.setAttribute('aria-checked', state.settings.reduceTransparency ? 'true' : 'false');
     void refreshStorage();
   };

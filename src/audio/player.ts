@@ -1,6 +1,7 @@
 import type { RepeatMode, TrackMeta } from '../types';
 import { getAudioBlob, getCoverBlob } from '../db';
 import { clearMetadata, setMetadata, setPlaybackState, setPosition } from './mediaSession';
+import { configureAudioSession } from './session';
 
 export type PlayState = 'idle' | 'loading' | 'playing' | 'paused' | 'ended';
 export type PlayerEvent = 'track' | 'state' | 'time' | 'queue';
@@ -35,6 +36,16 @@ export class Player {
   private pendingSeek: number | null = null;
   private loadToken = 0;
   private countedFor: string | null = null;
+  /** What the user asked for, as opposed to what the element is doing. */
+  private wantsPlay = false;
+  /** True while the audio session is known to be broken by an interruption. */
+  private interrupted = false;
+  private watchdog: number | undefined;
+  private lastMoveAt = 0;
+  private lastMovePos = 0;
+  private recoveries = 0;
+  /** When the source was last re-attached, to ignore the resulting pause. */
+  private refreshAt = 0;
 
   constructor(deps: PlayerDeps) {
     this.deps = deps;
@@ -42,12 +53,33 @@ export class Player {
     audio.preload = 'auto';
     audio.crossOrigin = null;
     audio.setAttribute('playsinline', '');
+    // Attached to the document on purpose: iOS routes audio more reliably for
+    // media elements that are in the tree, and it gives the suite a handle.
+    audio.setAttribute('data-refaudio-audio', '');
+    audio.setAttribute('aria-hidden', 'true');
+    audio.tabIndex = -1;
+    audio.style.cssText =
+      'position:fixed;left:0;bottom:0;width:1px;height:1px;opacity:0;pointer-events:none;';
+    if (document.body) document.body.append(audio);
+    else document.addEventListener('DOMContentLoaded', () => document.body.append(audio), { once: true });
+
     audio.addEventListener('play', () => {
       this.setState('playing');
       setPlaybackState('playing');
     });
     audio.addEventListener('pause', () => {
       if (this.stateValue === 'ended') return;
+      // Re-attaching the source can make WebKit fire a pause late; that one is
+      // part of the rebuild, not an interruption.
+      if (this.wantsPlay && Date.now() - this.refreshAt < 500) return;
+      // Only pause() stops on purpose. Anything else — the lock-screen button of
+      // a suspended page, a phone call, headphones pulled — leaves the audio
+      // session broken behind the element, so arm the recovery for the resume.
+      // A track that reached its end also fires pause first: that is not an
+      // interruption, and rebuilding there would re-seek to the end and stop.
+      if (this.wantsPlay && !this.atEnd()) this.interrupted = true;
+      this.wantsPlay = false;
+      this.stopWatchdog();
       this.setState('paused');
       setPlaybackState('paused');
       this.persistNow();
@@ -75,6 +107,17 @@ export class Player {
       }
       this.emit('time');
     });
+    // Unlocking the phone: the element can come back paused with no event, and
+    // iOS resets the session category even though we set it at launch.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'visible') return;
+      configureAudioSession();
+      if (!this.wantsPlay) return;
+      if (this.audio.paused) void this.play();
+      else this.startWatchdog();
+    });
+    window.addEventListener('pageshow', () => configureAudioSession());
+
     this.audio = audio;
   }
 
@@ -134,6 +177,14 @@ export class Player {
 
   get isPlaying(): boolean {
     return this.stateValue === 'playing';
+  }
+
+  /** True when playback reached the end of the media, not just paused late. */
+  private atEnd(): boolean {
+    const audio = this.audio;
+    if (audio.ended) return true;
+    const duration = audio.duration;
+    return Number.isFinite(duration) && duration > 0 && audio.currentTime >= duration - 0.1;
   }
 
   get upNext(): Array<{ index: number; track: TrackMeta }> {
@@ -211,13 +262,25 @@ export class Player {
 
   async play(): Promise<void> {
     if (!this.audio.src) return;
+
+    // Re-assert the session on every start: iOS resets it across an
+    // interruption, and `auto` is the category that plays silently.
+    configureAudioSession();
+    // Coming back from the lock screen or a call: the element left behind by
+    // that interruption has to be rebuilt or it stays mute.
+    if (this.interrupted) this.refreshAudioElement();
+
+    this.wantsPlay = true;
     try {
       await this.audio.play();
+      this.startWatchdog();
       if (this.currentId && this.countedFor !== this.currentId) {
         this.countedFor = this.currentId;
         this.deps.onPlayed(this.currentId, this.currentTime);
       }
     } catch (error) {
+      this.wantsPlay = false;
+      this.stopWatchdog();
       this.setState('paused');
       const name = error instanceof DOMException ? error.name : '';
       this.deps.onError(
@@ -229,6 +292,13 @@ export class Player {
   }
 
   pause(): void {
+    const wasPlaying = !this.audio.paused;
+    this.wantsPlay = false;
+    this.stopWatchdog();
+    // A pause asked for while the app is hidden came from the lock screen or
+    // Control Center. iOS tears the session down around it, so arm the
+    // recovery for the play that follows.
+    if (wasPlaying && document.visibilityState === 'hidden') this.interrupted = true;
     this.audio.pause();
     this.persistNow();
   }
@@ -239,6 +309,9 @@ export class Player {
   }
 
   stop(): void {
+    this.wantsPlay = false;
+    this.interrupted = false;
+    this.stopWatchdog();
     this.audio.pause();
     this.audio.removeAttribute('src');
     this.audio.load();
@@ -282,6 +355,8 @@ export class Player {
     }
 
     this.audio.pause();
+    this.wantsPlay = false;
+    this.stopWatchdog();
     this.stateValue = 'ended';
     setPlaybackState('paused');
     this.emit('state');
@@ -524,6 +599,11 @@ export class Player {
       return;
     }
 
+    // Loading a new track pauses on purpose and rebuilds the source anyway, so
+    // it must not look like an interruption to the recovery hooks.
+    this.wantsPlay = false;
+    this.interrupted = false;
+    this.recoveries = 0;
     this.audio.pause();
     this.revokeUrls();
     this.audioUrl = URL.createObjectURL(blob);
@@ -531,6 +611,7 @@ export class Player {
     this.audio.playbackRate = this.rate;
     this.audio.volume = this.volume;
     this.audio.load();
+    configureAudioSession();
 
     this.emit('track');
     setMetadata(track, null);
@@ -563,6 +644,83 @@ export class Player {
       return;
     }
     this.next(true);
+  }
+
+  /* --------------------------- recovery paths -------------------------- */
+
+  /**
+   * Rebuilds the media pipeline without changing tracks. After an interruption
+   * iOS hands the element back in a state where it claims to play while the
+   * audio session routes nothing (WebKit bug 323022), and simply calling
+   * `play()` on it stays mute. Re-attaching the source gives WebKit a fresh
+   * renderer, and the session is put back to `playback` while we are here; the
+   * position comes back through `pendingSeek` once metadata is available.
+   */
+  private refreshAudioElement(): void {
+    const audio = this.audio;
+    this.interrupted = false;
+    this.wantsPlay = false;
+    this.refreshAt = Date.now();
+    this.lastMoveAt = Date.now();
+    this.lastMovePos = audio.currentTime;
+    // Seeking to the end would finish the track immediately; an ended element
+    // restarts from zero on its own.
+    if (audio.currentTime > 0.25 && !this.atEnd()) this.pendingSeek = audio.currentTime;
+    configureAudioSession();
+    audio.volume = this.volume;
+    audio.playbackRate = this.rate;
+    try {
+      audio.load();
+    } catch {
+      // Ignore: the existing source still plays, and the next tap retries.
+    }
+    this.emit('time');
+  }
+
+  /**
+   * Watches for the other half of bug 323022: the element reports
+   * `paused === false` while `currentTime` never advances, and fires nothing at
+   * all, so polling the clock is the only way to notice. Local blobs never
+   * stall on the network, so a frozen clock means a dead session.
+   */
+  private startWatchdog(): void {
+    this.lastMoveAt = Date.now();
+    this.lastMovePos = this.currentTime;
+    if (this.watchdog !== undefined) return;
+    this.watchdog = window.setInterval(() => this.checkProgress(), 2000);
+  }
+
+  private stopWatchdog(): void {
+    if (this.watchdog === undefined) return;
+    window.clearInterval(this.watchdog);
+    this.watchdog = undefined;
+  }
+
+  private checkProgress(): void {
+    const audio = this.audio;
+    if (!this.wantsPlay || audio.paused) {
+      this.lastMoveAt = Date.now();
+      this.lastMovePos = audio.currentTime;
+      return;
+    }
+    const pos = audio.currentTime;
+    if (Math.abs(pos - this.lastMovePos) > 0.2) {
+      this.lastMoveAt = Date.now();
+      this.lastMovePos = pos;
+      this.recoveries = 0;
+      return;
+    }
+    if (Date.now() - this.lastMoveAt < 5000) return;
+    // Two rebuilds that do not help mean the file itself is the problem; stop
+    // rather than loop play() on it forever.
+    if (this.recoveries >= 2) {
+      this.stopWatchdog();
+      return;
+    }
+    this.recoveries += 1;
+    this.lastMoveAt = Date.now();
+    this.refreshAudioElement();
+    void this.play();
   }
 
   /* --------------------------- persistence ---------------------------- */

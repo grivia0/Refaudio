@@ -1,22 +1,12 @@
 import { Player } from './audio/player';
 import { bindActions } from './audio/mediaSession';
+import { configureAudioSession } from './audio/session';
 import { deletePlaylist, deleteTracks, putPlaylist, recordPlay } from './db';
 import { persist, pushRecent, refreshLibrary, state, trackOf } from './state';
 import type { Playlist } from './types';
 import { forgetArtwork } from './ui/artwork';
 import { toast } from './ui/overlay';
 import { newId } from './util';
-
-/** iOS 17.2+: keep playing even when the ring/silent switch is on. */
-function configureAudioSession(): void {
-  const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
-  if (!session) return;
-  try {
-    session.type = 'playback';
-  } catch {
-    // Older iOS exposes no audio session; nothing to do.
-  }
-}
 
 export const player = new Player({
   getTrack: (id) => trackOf(id),
